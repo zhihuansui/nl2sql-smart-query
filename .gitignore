@@ -1,0 +1,62 @@
+# ─── Python ──────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+venv.bak/
+*.so
+
+# ─── Node.js / Frontend ─────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/build/
+*.tsbuildinfo
+
+# ─── Environment & Secrets ──────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+
+# ─── IDE / Editor ──────────────────────────────────────────────
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── Project Data (auto-created) ────────────────────────────────
+data/
+*.db
+chroma_data/
+
+# ─── Testing / Reports ─────────────────────────────────────────
+playwright-report/
+test-results/
+coverage/
+.coverage
+htmlcov/
+.pytest_cache/
+
+# ─── Docker ─────────────────────────────────────────────────────
+.docker/
+
+# ─── Logs ───────────────────────────────────────────────────────
+*.log
+logs/
+
+# ─── OS ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ─── Claude Code ────────────────────────────────────────────────
+.claude/scheduled_tasks.json
+.claude/worktrees/

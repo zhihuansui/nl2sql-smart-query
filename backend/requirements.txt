@@ -1,0 +1,33 @@
+# === Web Framework ===
+fastapi==0.110.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+
+# === LangChain & AI ===
+langchain>=0.3.0,<0.4.0
+langchain-community>=0.3.0
+langchain-openai>=0.2.0
+
+# === Database ===
+sqlalchemy>=2.0,<2.1
+pymysql>=1.1.0            # MySQL driver (sync, fallback)
+psycopg2-binary>=2.9.0    # PostgreSQL driver (sync, fallback)
+aiomysql>=0.2.0           # MySQL async driver
+asyncpg>=0.29.0           # PostgreSQL async driver
+aiosqlite>=0.20.0         # SQLite async driver (dev/test)
+
+# === SQL Safety ===
+sqlparse>=0.5,<0.6
+
+# === Vector Store ===
+chromadb>=0.5.0
+
+# === LLM / Embedding ===
+openai>=1.30.0
+
+# === Config & Env ===
+python-dotenv>=1.0.0
+pydantic-settings>=2.0.0
+
+# === Utility ===
+pydantic>=2.0,<3.0
