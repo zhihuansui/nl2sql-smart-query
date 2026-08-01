@@ -6,6 +6,7 @@
 # SQL 企业级智能数据分析助手
 
 基于 **LangChain ReAct Agent** 的企业级智能数据查询平台。用户输入自然语言，系统自动完成 NL → SQL 转换、安全风控、查询执行、结果可视化全链路。
+CSDN:https://blog.csdn.net/2302_80354289/article/details/163011655?spm=1001.2014.3001.5502
 
 
 ---
