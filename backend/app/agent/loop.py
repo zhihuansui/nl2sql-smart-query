@@ -1,9 +1,16 @@
 """
-ReAct Agent 循环封装 — 创建 LangChain ReAct Agent，管理执行、
-超时熔断、异常捕获和 SQL 代码块提取。
+SQL 生成循环 — 调用 LLM 生成 SQL 并提取 ```sql 代码块。
 
-通过 ``AgentLoop.run()`` 执行单次推理，外部 Orchestrator 负责
-重试和错误反馈。
+设计要点：
+
+- 单次 LLM 调用完成生成：NL→SQL 的输入（问题 + 表结构）一次性给全，
+  不需要多轮工具调用探索，链路短、延迟可控、输出可复现。
+- 失败模式单一：只需从输出中提取 ```sql 代码块，无需解析结构化的
+  工具调用参数，出错时容易定位。
+- 超时熔断 + 异常捕获：失败时返回结构化错误，由 Orchestrator 决定
+  是否把数据库真实报错回灌给 LLM 重新生成。
+
+外部 Orchestrator 负责 Schema Linking、Few-Shot 检索、安全检查、RLS 注入等。
 """
 
 from __future__ import annotations
@@ -12,10 +19,7 @@ import asyncio
 import re
 from typing import Optional
 
-from langchain.agents import AgentExecutor, create_react_agent
-from langchain_core.agents import AgentFinish
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import BaseTool
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.llm.provider import LLMProvider
 
@@ -28,58 +32,29 @@ _SQL_BLOCK_PATTERN = re.compile(
 
 
 def extract_sql(text: str) -> Optional[str]:
-    """从 ReAct Agent 的最终输出中提取 ```sql 代码块。
-
-    Args:
-        text: Agent 输出的文本（可能含 ```sql ... ``` 标记）。
-
-    Returns:
-        提取到的第一条 SQL 语句，没有找到则返回 ``None``。
-    """
+    """从 LLM 输出中提取 ```sql 代码块。"""
     match = _SQL_BLOCK_PATTERN.search(text)
     if match:
         return match.group(1).strip()
     return None
 
 
-# ─── Agent 工厂 ───────────────────────────────────────────────────────────────
-
-def _build_react_prompt() -> ChatPromptTemplate:
-    """构建 ReAct Agent 使用的 Prompt 模板。
-
-    System Prompt 由 Orchestrator 动态构建后作为变量传入。
-    """
-    return ChatPromptTemplate.from_messages([
-        ("system", "{system_prompt}"),
-        MessagesPlaceholder("chat_history", optional=True),
-        ("human", "{input}"),
-        MessagesPlaceholder("agent_scratchpad"),
-    ])
-
-
-# ─── Agent 循环 ───────────────────────────────────────────────────────────────
+# ─── SQL 生成循环 ──────────────────────────────────────────────────────────────
 
 class AgentLoop:
-    """ReAct Agent 执行循环。
+    """LLM SQL 生成循环。
 
-    封装了 Agent 的创建、执行、超时熔断和异常处理。
-    每个 ``AgentLoop`` 实例可重复使用（工具相同但 prompt 可变）。
+    单次调用 LLM 生成 SQL 并提取代码块。生成失败（超时 / 无有效 SQL）
+    时返回结构化错误，由 Orchestrator 决定是否重试。
     """
 
-    def __init__(
-        self,
-        tools: list[BaseTool],
-        max_iterations: int = 10,
-        max_execution_time: int = 15,
-    ) -> None:
+    MAX_EXECUTION_SECONDS: int = 30
+
+    def __init__(self, max_execution_time: int = 30) -> None:
         """
         Args:
-            tools:               LangChain Tool 列表。
-            max_iterations:      Agent 内部 ReAct 迭代上限。
-            max_execution_time:  单次 Agent 调用的超时秒数（秒）。
+            max_execution_time: 单次 LLM 调用的超时秒数。
         """
-        self._tools = tools
-        self._max_iterations = max_iterations
         self._max_execution_time = max_execution_time
         self._llm_provider = LLMProvider()
 
@@ -90,7 +65,7 @@ class AgentLoop:
         system_prompt: str,
         question: str,
     ) -> dict:
-        """执行一次 ReAct Agent 调用。
+        """调用 LLM 生成 SQL。
 
         Args:
             system_prompt: 包含 schema、few-shot、RLS 等上下文的完整 System Prompt。
@@ -102,45 +77,40 @@ class AgentLoop:
             {"sql": None, "raw_output": "...", "success": False, "error": "..."}
         """
         llm = self._llm_provider.get_default_model()
-        prompt = _build_react_prompt()
 
-        agent = create_react_agent(llm, self._tools, prompt)
-        executor = AgentExecutor(
-            agent=agent,
-            tools=self._tools,
-            max_iterations=self._max_iterations,
-            handle_parsing_errors=True,
-            verbose=False,
-        )
+        # 构建消息
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(
+                content=(
+                    f"问题: {question}\n\n"
+                    "请直接生成 SQL 查询语句，用 ```sql 代码块包裹。\n"
+                    "【重要】涉及用户表的关联必须用 LEFT JOIN（而非 JOIN），"
+                    "这样没有订单的用户也会出现在结果中，相关字段值用 0 或 NULL 填充。"
+                )
+            ),
+        ]
 
         try:
             result = await asyncio.wait_for(
-                executor.ainvoke({
-                    "system_prompt": system_prompt,
-                    "input": question,
-                    "chat_history": [],
-                    "agent_scratchpad": [],
-                }),
+                llm.agenerate([messages]),
                 timeout=self._max_execution_time,
             )
+            output = result.generations[0][0].text
         except asyncio.TimeoutError:
             return {
                 "sql": None,
                 "raw_output": "",
                 "success": False,
-                "error": "Agent 推理超时（超过 {} 秒）".format(self._max_execution_time),
+                "error": f"LLM 响应超时（超过 {self._max_execution_time} 秒）",
             }
         except Exception as e:
             return {
                 "sql": None,
                 "raw_output": "",
                 "success": False,
-                "error": f"Agent 推理异常: {e!s}",
+                "error": f"LLM 调用异常: {e!s}",
             }
-
-        output = result.get("output", "")
-        if isinstance(output, AgentFinish):
-            output = output.return_values.get("output", "")
 
         sql = extract_sql(output)
 
@@ -149,7 +119,7 @@ class AgentLoop:
                 "sql": None,
                 "raw_output": output,
                 "success": False,
-                "error": "Agent 未生成有效的 SQL 代码块",
+                "error": f"LLM 未生成有效的 SQL 代码块。原始输出: {output[:300]}",
             }
 
         return {

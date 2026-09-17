@@ -4,8 +4,8 @@ uvicorn[standard]==0.29.0
 python-multipart==0.0.9
 
 # === LangChain & AI ===
-langchain>=0.3.0,<0.4.0
-langchain-community>=0.3.0
+# 仅使用 LLM 调用层（ChatOpenAI + 消息类型），未使用其 Agent/Chain 编排能力
+langchain-core>=0.3.0
 langchain-openai>=0.2.0
 
 # === Database ===

@@ -3,7 +3,7 @@ Agent 编排器 — 按 SPEC 4.2 节流程协调完整的数据查询链路。
 
 流程:
   意图识别 → Schema Linking → Few-Shot 检索 → Prompt 组装
-    → ReAct Agent 执行 → 安全护栏 → RLS 注入 → SQL 执行
+    → LLM 生成 SQL → 安全护栏 → RLS 注入 → SQL 执行
     → 白话解释 → 结果持久化 → SSE 事件流输出
 
 暴露 ``execute()`` 异步生成器，每步 yield SSE 兼容事件字典。
@@ -23,10 +23,8 @@ from app.agent.few_shot import FewShotRetriever
 from app.agent.loop import AgentLoop
 from app.agent.prompt_builder import PromptBuilder
 from app.agent.schema_link import SchemaLinker
-from app.agent.tools import SchemaInfoTool, SQLQueryTool
 from app.db.engine import async_session_factory
 from app.db.executor import TargetDBExecutor
-from app.db.metadata import MetadataScanner
 from app.db.models import QueryHistory, QueryStatus, Session
 from app.llm.explainer import Explainer
 from app.security.guard import SQLGuard
@@ -44,12 +42,30 @@ def _sse(event: str, data: dict) -> dict:
 
 # 简单启发式：检测是否包含数据查询相关关键词
 _QUERY_INTENT_KEYWORDS = [
+    # ── 已有关键词 ──
     "查询", "统计", "多少", "几个", "列表", "数据", "总数", "合计",
     "平均", "最大", "最小", "哪个", "哪些", "排名", "占比", "分布",
     "比", "率", "趋势", "增长", "减少", "变化",
     "select", "count", "sum", "avg", "group", "order", "where",
     "how many", "how much", "what is", "list", "show", "get",
     "total", "average", "top", "汇总", "明细",
+    # ── 补充中文自然查询 ──
+    "最多", "最少", "最好", "最差",     # 最高级（排名/Top-N）
+    "消费", "金额", "花费", "花钱",     # 金额相关（隐含数据查询）
+    "用户", "客户", "订单", "商品",     # 业务实体（常见查询对象）
+    "挑选", "找出", "列出", "显示",     # 查询动作
+    "看看", "告诉我", "给我",           # 口语查询
+    "每个", "各个", "按", "分",        # 分组/聚合
+    "销售额", "利润", "收入",           # 业务指标
+    "上个月", "本月", "今年", "昨天",   # 时间相关
+    "对比", "比较", "不同",             # 对比分析
+    # ── 简短查询 / 中英混合 ──
+    "查", "帮我查", "查一下",           # "查" 的常见变体
+    "表", "table",                     # 数据表相关
+    "user", "users", "order", "orders",# 常见英文实体
+    "帮我", "帮我查", "我想",          # 常见口语前缀
+    "有几", "有没有", "是否存在",       # 存在性查询
+    "最近", "最新", "最后",             # 时序查询
 ]
 
 
@@ -79,8 +95,8 @@ class QueryOrchestrator:
     → 结果解释的全流程，以 SSE 事件流形式返回。
     """
 
-    MAX_RETRIES: int = 2          # 重试 2 次（共 3 次尝试）
-    AGENT_TIMEOUT_SECONDS: int = 15
+    MAX_RETRIES: int = 1          # 重试 1 次（共 2 次尝试）
+    AGENT_TIMEOUT_SECONDS: int = 30
 
     def __init__(self) -> None:
         # ── 核心组件 ──
@@ -88,16 +104,9 @@ class QueryOrchestrator:
         self.few_shot = FewShotRetriever()
         self.prompt_builder = PromptBuilder()
         self.sql_executor = TargetDBExecutor()
-        self.metadata_scanner = MetadataScanner()
         self.explainer = Explainer()
         self.guard = SQLGuard()
         self.rls = RowLevelSecurity()
-
-        # Agent 依赖的工具（共享 executor/scanner 实例）
-        self._tools = [
-            SQLQueryTool(self.sql_executor),
-            SchemaInfoTool(self.metadata_scanner),
-        ]
 
     # ── 主入口 ────────────────────────────────────────────────────────────────
 
@@ -144,7 +153,7 @@ class QueryOrchestrator:
                     "state": "schema_linking",
                     "message": "正在检索表结构...",
                 })
-                schemas = await self.schema_linker.retrieve(question, top_k=3)
+                schemas = await self.schema_linker.retrieve(question, top_k=5)
 
                 # ==========================================================
                 # 3. Few-Shot 检索
@@ -168,16 +177,14 @@ class QueryOrchestrator:
                 )
 
                 # ==========================================================
-                # 6. 创建 Agent 循环
+                # 6. 创建 SQL 生成循环
                 # ==========================================================
                 agent_loop = AgentLoop(
-                    tools=self._tools,
-                    max_iterations=10,
                     max_execution_time=self.AGENT_TIMEOUT_SECONDS,
                 )
 
                 # ==========================================================
-                # 7. ReAct 循环（含重试）
+                # 7. 生成 → 校验 → 执行（失败则回灌错误重试）
                 # ==========================================================
                 last_error: Optional[str] = None
                 final_sql: Optional[str] = None

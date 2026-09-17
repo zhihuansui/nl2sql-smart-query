@@ -1,6 +1,6 @@
 """
 SQL 企业级智能数据分析助手 — 后端入口
-基于 FastAPI + LangChain ReAct Agent
+基于 FastAPI + LangChain（LLM 调用层）
 """
 
 from contextlib import asynccontextmanager
@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agent.init_data import index_all_table_schemas, sync_golden_examples_to_chroma
 from app.api.router import api_router
 from app.config import settings
 from app.db.engine import init_db
@@ -31,6 +32,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[Vector] Chroma initialization failed: {e!s}")
 
+    try:
+        table_count = await index_all_table_schemas()
+        print(f"[Vector] Table schemas indexed: {table_count} tables")
+    except Exception as e:
+        print(f"[Vector] Table schema indexing failed: {e!s}")
+
+    try:
+        example_count = await sync_golden_examples_to_chroma()
+        print(f"[Vector] Golden examples synced: {example_count} examples")
+    except Exception as e:
+        print(f"[Vector] Golden example sync failed: {e!s}")
+
     yield
 
     # --- 关闭时 ---
@@ -39,7 +52,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="SQL Smart Query Agent",
-    description="基于 LangChain ReAct Agent 的企业级智能数据分析助手",
+    description="基于 LLM 的 NL2SQL 企业级智能数据分析助手",
     version="1.0.0",
     lifespan=lifespan,
 )

@@ -7,6 +7,10 @@
 from __future__ import annotations
 
 import time
+import uuid
+from datetime import date, datetime, timedelta
+from datetime import time as dt_time
+from decimal import Decimal
 from typing import Any, Optional
 
 from sqlalchemy import text
@@ -19,6 +23,35 @@ from app.config import settings
 
 _MAX_RESULT_ROWS = 200
 """单次查询返回的最大行数"""
+
+
+def _json_safe(value: Any) -> Any:
+    """将数据库驱动返回的值递归转换为 JSON 可序列化类型。
+
+    MySQL 的 DECIMAL 列返回 ``Decimal``、DATETIME 返回
+    ``datetime`` 等类型，无法被 ``json.dumps`` 序列化，
+    会导致 API 响应或写入 SQLite JSON 列时 500。
+    """
+    if value is None or isinstance(value, (bool, int, str, float)):
+        return value
+    if isinstance(value, Decimal):
+        # 金额等 DECIMAL → float（浮点展示足够；超大整数浮点会丢精度，
+        # 但业务查询结果展示场景可接受）
+        return float(value)
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, (datetime, date, dt_time)):
+        return value.isoformat()
+    if isinstance(value, timedelta):
+        return value.total_seconds()
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    # 兜底：其他未知类型转为字符串
+    return str(value)
 
 
 def _build_target_async_url() -> str:
@@ -100,9 +133,9 @@ class TargetDBExecutor:
             # 获取全部行
             all_rows = result.fetchall()
             total_count = len(all_rows)
-            # 截断前 200 行
+            # 截断前 200 行，并规范化 Decimal/datetime 等为 JSON 安全类型
             truncated = all_rows[:_MAX_RESULT_ROWS]
-            rows = [list(row) for row in truncated]
+            rows = [_json_safe(list(row)) for row in truncated]
 
         elapsed_ms = int((time.perf_counter() - start) * 1000)
 
@@ -129,7 +162,10 @@ class TargetDBExecutor:
             result = await conn.execute(text(sql))
             columns = list(result.keys())
             rows = result.fetchall()
-            return [dict(zip(columns, row)) for row in rows]
+            return [
+                {col: _json_safe(val) for col, val in zip(columns, row)}
+                for row in rows
+            ]
 
     async def test_connection(self) -> bool:
         """测试数据库连接是否正常。

@@ -2,7 +2,7 @@
 目标业务数据库元数据扫描器。
 
 从 information_schema 或方言特定来源读取表结构信息，
-用于初始化 Chroma ``table_schemas`` 集合以及 SchemaInfoTool。
+用于初始化 Chroma ``table_schemas`` 集合，以及 ``GET /tables`` 系列接口。
 """
 
 from __future__ import annotations

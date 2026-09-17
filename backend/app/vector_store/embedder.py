@@ -1,7 +1,8 @@
 """
-Embedding 服务 —— 封装 OpenAI text-embedding-3-small。
+Embedding 服务 —— 通过 OpenAI 兼容接口调用 Ollama / 第三方 Embedding 模型。
 
-提供单条 / 批量文本的向量化功能，输出 1536 维向量。
+默认使用 ``bge-m3``（通过 Ollama 本地运行），输出 1024 维向量。
+只需配置 ``EMBEDDING_BASE_URL`` 即可切换任意 OpenAI 兼容的 Embedding API。
 """
 
 from functools import lru_cache
@@ -10,85 +11,48 @@ from openai import AsyncOpenAI
 
 from app.config import settings
 
+# 单次 embedding 请求的最大文本数。
+# 表结构按行切分后，一张宽表可能产生几十条文本，一次性提交容易触发
+# 上游超时/长度限制，因此分批提交。
+_BATCH_SIZE = 16
+
 
 @lru_cache(maxsize=1)
 def _get_client() -> AsyncOpenAI:
     """获取 OpenAI 异步客户端单例。
 
-    使用 ``EMBEDDING_API_KEY`` 初始化；支持通过
-    ``OPENAI_BASE_URL`` 环境变量自定义 endpoint（兼容
-    第三方 embedding 服务）。
+    通过 ``EMBEDDING_BASE_URL`` 支持任意兼容 OpenAI 的 Embedding 服务：
+     - Ollama（本地）: http://localhost:11434
+     - 第三方 API:    https://api.siliconflow.cn 等
     """
-    return AsyncOpenAI(api_key=settings.EMBEDDING_API_KEY)
-
-
-def _require_api_key() -> None:
-    """检查 API Key 是否已配置，未配置则抛出明确的运行时错误。"""
-    if not settings.EMBEDDING_API_KEY:
-        raise RuntimeError(
-            "EMBEDDING_API_KEY 未配置。请在 .env 文件中设置 "
-            "EMBEDDING_API_KEY=sk-xxx 以启用 embedding 功能。"
-        )
+    kwargs = {"api_key": settings.EMBEDDING_API_KEY or "ollama"}
+    if settings.EMBEDDING_BASE_URL:
+        kwargs["base_url"] = settings.EMBEDDING_BASE_URL.rstrip("/") + "/v1"
+    return AsyncOpenAI(**kwargs)
 
 
 async def embed_text(text: str) -> list[float]:
-    """将单条文本向量化为 1536 维向量。
-
-    Args:
-        text: 要向量化的文本。
-
-    Returns:
-        一个包含 1536 个 float 的向量。
-
-    Raises:
-        RuntimeError: EMBEDDING_API_KEY 未配置时抛出。
-
-    Example::
-
-        >>> vec = await embed_text("查询上周的订单总额")
-        >>> len(vec)
-        1536
-    """
-    _require_api_key()
-    client = _get_client()
-    response = await client.embeddings.create(
-        model=settings.EMBEDDING_MODEL,
-        input=text,
-    )
-    return response.data[0].embedding
+    """将单条文本向量化。"""
+    return (await embed_texts([text]))[0]
 
 
 async def embed_texts(texts: list[str]) -> list[list[float]]:
-    """批量向量化 —— 一次 API 调用完成多条文本。
-
-    Args:
-        texts: 要向量化的文本列表。
-
-    Returns:
-        向量列表，顺序与输入 ``texts`` 一致。
-        输入为空时返回空列表。
-
-    Raises:
-        RuntimeError: EMBEDDING_API_KEY 未配置时抛出。
-
-    Example::
-
-        >>> vecs = await embed_texts(["问题1", "问题2"])
-        >>> len(vecs)
-        2
-        >>> len(vecs[0])
-        1536
-    """
+    """批量向量化（自动分批，返回顺序与入参一致）。"""
     if not texts:
         return []
 
-    _require_api_key()
     client = _get_client()
-    response = await client.embeddings.create(
-        model=settings.EMBEDDING_MODEL,
-        input=texts,
-    )
+    embeddings: list[list[float]] = []
 
-    # 按 index 排序确保与输入顺序一致
-    sorted_data = sorted(response.data, key=lambda x: x.index)
-    return [item.embedding for item in sorted_data]
+    for start in range(0, len(texts), _BATCH_SIZE):
+        batch = texts[start:start + _BATCH_SIZE]
+        response = await client.embeddings.create(
+            model=settings.EMBEDDING_MODEL,
+            input=batch,
+        )
+        # 部分服务不保证返回顺序，按 index 排回
+        embeddings.extend(
+            item.embedding for item in sorted(response.data, key=lambda x: x.index)
+        )
+
+    return embeddings

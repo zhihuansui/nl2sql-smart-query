@@ -252,6 +252,29 @@ export async function fetchTableColumns(
   return res.data;
 }
 
+/** 表数据预览 */
+export interface TableRowsResult {
+  table_name: string;
+  columns: string[];
+  rows: unknown[][];
+  total_count: number;
+  execution_ms: number;
+  limit: number;
+  offset: number;
+}
+
+export async function fetchTableRows(
+  tableName: string,
+  limit = 100,
+  offset = 0,
+): Promise<TableRowsResult> {
+  const res = await http.get(
+    `/tables/${encodeURIComponent(tableName)}/rows`,
+    { params: { limit, offset } },
+  );
+  return res.data;
+}
+
 // ============================================================
 // 黄金示例
 // ============================================================

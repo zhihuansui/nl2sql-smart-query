@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.config import settings
 from app.db.models import Base, Session
 
 
@@ -123,16 +124,40 @@ def mock_explainer():
 
 @pytest.fixture
 def mock_vector_store():
-    """Mock Chroma 相关调用（embedder + chroma_client）。"""
+    """Mock Chroma 相关调用（embedder + chroma_client）。
+
+    模拟「一行数据一个 chunk」的索引结构：``users`` 表被切分为 3 个 chunk
+    （表头行 + id + name），元数据带表名与版本号。
+    """
+    version = settings.SCHEMA_INDEX_VERSION
+    table_name = "users"
+
+    def _meta(column: str, index: int, total: int) -> dict[str, Any]:
+        return {
+            "table": table_name,
+            "version": version,
+            "column": column,
+            "chunk_index": index,
+            "chunk_total": total,
+        }
+
+    chunks = {
+        "documents": ["表 users:", "  id(bigint PK)", "  name(varchar)"],
+        "metadatas": [_meta("", 0, 3), _meta("id", 1, 3), _meta("name", 2, 3)],
+        "distances": [0.1, 0.1, 0.1],
+        "ids": ["schema:users:0", "schema:users:1", "schema:users:2"],
+    }
+
     patches = [
-        patch("app.agent.schema_link.embed_text", AsyncMock(return_value=[0.1] * 1536)),
-        patch("app.agent.schema_link.query_similar", AsyncMock(return_value={
-            "documents": ["表 users: id(bigint PK), name(varchar)"],
-            "metadatas": [{}],
-            "distances": [0.1],
-            "ids": ["schema:users"],
-        })),
-        patch("app.agent.few_shot.embed_text", AsyncMock(return_value=[0.1] * 1536)),
+        # ── schema_link：两阶段检索 ──
+        patch("app.agent.schema_link.get_table_schemas_collection", MagicMock()),
+        patch("app.agent.schema_link.embed_texts", AsyncMock(return_value=[[0.1] * 1024])),
+        patch("app.agent.schema_link.query_similar", AsyncMock(return_value=chunks)),
+        patch("app.agent.schema_link.get_where", AsyncMock(return_value=chunks)),
+        patch("app.agent.schema_link.delete_where", AsyncMock(return_value=None)),
+        patch("app.agent.schema_link.add_documents", AsyncMock(return_value=None)),
+        # ── few_shot ──
+        patch("app.agent.few_shot.embed_text", AsyncMock(return_value=[0.1] * 1024)),
         patch("app.agent.few_shot.query_similar", AsyncMock(return_value={
             "documents": ["查询用户总数"],
             "metadatas": [{"sql": "SELECT COUNT(*) FROM users"}],

@@ -13,10 +13,13 @@ SYSTEM_PROMPT_TEMPLATE = """## 角色
 你是一个企业级 SQL 查询助手，帮助业务人员从数据库中提取数据。
 严格遵守以下规则：
 1. 仅生成 SELECT 语句，禁止任何 INSERT/UPDATE/DELETE/DROP/ALTER。
-2. 只使用下方【可用表结构】中列出的表和字段，不确定字段时使用 SchemaInfoTool 查询。
-3. 生成 SQL 前先思考：是否需要 JOIN、聚合、排序、LIMIT？
-4. LIMIT 最大不超过 1000，若用户未指定，默认 LIMIT 200。
-5. 输出最终 SQL 时，用 ```sql 代码块包裹。
+2. 只使用下方【可用表结构】中列出的表和字段。
+3. 生成 SQL 前先思考：是否需要 LEFT JOIN、聚合、排序、LIMIT？
+4. 涉及用户表关联时，必须使用 LEFT JOIN（禁止使用 INNER JOIN 或 JOIN）。
+   正确示例: ``FROM users u LEFT JOIN orders o ON u.id = o.user_id``
+   错误示例: ``FROM orders o JOIN users u ON o.user_id = u.id``
+5. LIMIT 最大不超过 1000，若用户未指定，默认 LIMIT 200。
+6. 输出最终 SQL 时，用 ```sql 代码块包裹。
 
 ## 可用表结构
 {schema_text}
@@ -43,7 +46,7 @@ class PromptBuilder:
     def _format_schemas(schemas: list[str]) -> str:
         """将 schema 文本列表格式化为可读文本。"""
         if not schemas:
-            return "（未检索到表结构，请使用 SchemaInfoTool 查询）"
+            return "（未检索到相关表结构）"
         return "\n\n".join(schemas)
 
     @staticmethod

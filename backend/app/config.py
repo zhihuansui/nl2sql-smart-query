@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # Embedding
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     EMBEDDING_API_KEY: str = ""
+    EMBEDDING_BASE_URL: str = ""                 # 空=OpenAI；填地址可兼容第三方
+
+    # 表结构索版本 — 写入向量元数据，并作为检索过滤条件。
+    # 改动表结构或切分策略后，把它 +1 即可让旧向量自动失效（重新索引后生效）。
+    SCHEMA_INDEX_VERSION: str = "1.0"
 
     # 连接池
     DB_POOL_SIZE: int = 30
